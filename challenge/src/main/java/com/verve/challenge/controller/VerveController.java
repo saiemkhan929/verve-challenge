@@ -2,55 +2,96 @@ package com.verve.challenge.controller;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.beans.factory.annotation.Autowired;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 public class VerveController {
 
-    private final ConcurrentMap<Integer, Boolean> uniqueIds = new ConcurrentHashMap<>();
-    private final Logger logger = LoggerFactory.getLogger(VerveController.class);
+    private static final Logger logger = LoggerFactory.getLogger(VerveController.class);
+
+    private final ThreadPoolTaskExecutor executor;
+    private final WebClient webClient;
+    private final StringRedisTemplate redisTemplate;  // Redis template for storing unique IDs
+
+    @Autowired
+    public VerveController(ThreadPoolTaskExecutor executor, WebClient.Builder webClientBuilder, StringRedisTemplate redisTemplate) {
+        this.executor = executor;
+        this.webClient = webClientBuilder.build();
+        this.redisTemplate = redisTemplate;
+    }
 
     @GetMapping("/api/verve/accept")
-    public ResponseEntity<String> accept(@RequestParam("id") int id,
-                                         @RequestParam(value = "endpoint", required = false) String endpoint) {
-        try {
-            uniqueIds.put(id, true); // Adding to the map ensures uniqueness
+    public CompletableFuture<ResponseEntity<String>> acceptRequest(@RequestParam int id,
+                                                                   @RequestParam(required = false) String endpoint) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // Use Redis to store unique IDs across instances
+                String key = "unique:id:" + id;
+                ValueOperations<String, String> operations = redisTemplate.opsForValue();
 
-            if (endpoint != null) {
-                sendHttpRequest(endpoint);
+                // Check if the ID already exists, if not, add it
+                Boolean isUnique = operations.setIfAbsent(key, "1");
+
+                if (isUnique != null && isUnique) {
+                    // Set expiration for the key so it auto-expires after a certain time
+                    redisTemplate.expire(key, 1, TimeUnit.MINUTES);
+
+                    // Asynchronously send request if the endpoint is provided
+                    if (endpoint != null) {
+                        sendPostRequest(endpoint, getUniqueCount());
+                    }
+                }
+
+                return ResponseEntity.ok("ok");
+            } catch (Exception e) {
+                logger.error("Error processing request", e);
+                return ResponseEntity.status(500).body("failed");
             }
-
-            return new ResponseEntity<>("ok", HttpStatus.OK);
-        } catch (Exception e) {
-            logger.error("Error processing request", e);
-            return new ResponseEntity<>("failed", HttpStatus.INTERNAL_SERVER_ERROR);
-        }
+        }, executor); // Use the executor for asynchronous request handling
     }
 
-    private void sendHttpRequest(String endpoint) {
-        try {
-            RestTemplate restTemplate = new RestTemplate();
-            String url = endpoint + "?uniqueCount=" + uniqueIds.size();
-
-            ResponseEntity<String> response = restTemplate.getForEntity(url, String.class);
-            logger.info("Sent request to: " + url + ", Status code: " + response.getStatusCode());
-        } catch (Exception e) {
-            logger.error("Error making HTTP request to " + endpoint, e);
-        }
-    }
+    // Log unique requests every minute using a scheduled task
     @Scheduled(fixedRate = 60000)
-    public void logUniqueRequestCount() {
-        int uniqueCount = uniqueIds.size();
-        uniqueIds.clear(); // Clear the map for the next minute
-        logger.info("Unique requests in the last minute: " + uniqueCount);
+    private void logUniqueRequests() {
+        long uniqueCount = redisTemplate.keys("unique:id:*").size();
+        logger.info("Unique requests in the last minute: {}", uniqueCount);
+    }
+
+    // Send an HTTP POST request using WebClient for non-blocking I/O
+    private void sendPostRequest(String endpoint, long count) {
+        Map<String, Object> postData = new HashMap<>();
+        postData.put("unique_count", count);
+
+        webClient.post()
+                .uri(endpoint)
+                .bodyValue(postData)
+                .retrieve()
+                .toBodilessEntity()
+                .doOnSuccess(response -> logger.info("Response code from endpoint {}: {}", endpoint, response.getStatusCode()))
+                .doOnError(error -> logger.error("Failed to send POST request to {}", endpoint, error))
+                .subscribe(); // Non-blocking subscription
+    }
+
+    @PostMapping("/api/verve/verify")
+    public ResponseEntity<String> verifyEndpoint(@RequestParam int uniqueCount, @RequestBody Map<String, Object> requestData) {
+        logger.info("Received verification request with data: {}", requestData);
+        return ResponseEntity.ok("Verification successful");
+    }
+
+    // Helper method to get the count of unique IDs in Redis
+    private long getUniqueCount() {
+        return redisTemplate.keys("unique:id:*").size();
     }
 }
