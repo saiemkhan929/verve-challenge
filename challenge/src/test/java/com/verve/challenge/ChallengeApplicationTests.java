@@ -18,8 +18,8 @@ public class ChallengeApplicationTests {
 	private MockMvc mockMvc;
 
 	@Test
-	public void testAcceptRequest() throws Exception {
-		mockMvc.perform(get("/api/verve/accept").param("id", "1234"))
+	public void testAcceptRequestWithoutEndpoint() throws Exception {
+		mockMvc.perform(get("/api/verve/accept").param("id", "1"))
 				.andExpect(status().isOk())
 				.andExpect(content().string("ok"));
 	}
@@ -27,7 +27,7 @@ public class ChallengeApplicationTests {
 	@Test
 	public void testAcceptRequestWithEndpoint() throws Exception {
 		mockMvc.perform(get("/api/verve/accept")
-						.param("id", "5678")
+						.param("id", "1")
 						.param("endpoint", "http://localhost:8080"))
 				.andExpect(status().isOk())
 				.andExpect(content().string("ok"));

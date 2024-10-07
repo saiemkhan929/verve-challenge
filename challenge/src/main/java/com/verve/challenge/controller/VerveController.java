@@ -2,9 +2,10 @@ package com.verve.challenge.controller;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.RedisTemplate;
+import com.verve.challenge.service.KafkaProducerService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.bind.annotation.*;
@@ -16,42 +17,65 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Controller class for handling Verve API requests.
+ * This controller uses asynchronous processing and scheduling tasks to manage
+ * request acceptance, unique ID logging, and integration with Redis and Kafka.
+ */
 @RestController
+@EnableScheduling
 public class VerveController {
 
     private static final Logger logger = LoggerFactory.getLogger(VerveController.class);
 
     private final ThreadPoolTaskExecutor executor;
     private final WebClient webClient;
-    private final StringRedisTemplate redisTemplate;  // Redis template for storing unique IDs
+    private final RedisTemplate redisTemplate;
+    private final KafkaProducerService kafkaProducerService;
 
+    /**
+     * Constructor for VerveController.
+     *
+     * @param executor the thread pool task executor for asynchronous operations
+     * @param webClientBuilder builder for creating WebClient instances
+     * @param redisTemplate template for interacting with Redis
+     * @param kafkaProducerService service for sending messages to Kafka
+     */
     @Autowired
-    public VerveController(ThreadPoolTaskExecutor executor, WebClient.Builder webClientBuilder, StringRedisTemplate redisTemplate) {
+    public VerveController(ThreadPoolTaskExecutor executor, WebClient.Builder webClientBuilder, RedisTemplate redisTemplate, KafkaProducerService kafkaProducerService) {
         this.executor = executor;
         this.webClient = webClientBuilder.build();
         this.redisTemplate = redisTemplate;
+        this.kafkaProducerService = kafkaProducerService;
     }
 
+    /**
+     * Accepts incoming requests and processes them asynchronously.
+     * The request is logged with a unique ID in Redis, and optionally sends a request to a specified endpoint.
+     *
+     * @param id the unique identifier for the request
+     * @param endpoint an optional endpoint to send a POST request with the unique count
+     * @return a CompletableFuture representing the asynchronous result of the request
+     */
     @GetMapping("/api/verve/accept")
-    public CompletableFuture<ResponseEntity<String>> acceptRequest(@RequestParam int id,
+    public CompletableFuture<ResponseEntity<String>> acceptRequest(@RequestParam Integer id,
                                                                    @RequestParam(required = false) String endpoint) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // Use Redis to store unique IDs across instances
-                String key = "unique:id:" + id;
-                ValueOperations<String, String> operations = redisTemplate.opsForValue();
+                if (id == null) {
+                    return ResponseEntity.badRequest().body("Missing required 'id' parameter");
+                }
 
-                // Check if the ID already exists, if not, add it
-                Boolean isUnique = operations.setIfAbsent(key, "1");
+                // Add the ID to a Redis Set, which ensures only unique IDs are stored
+                String setKey = "unique:ids";
+                redisTemplate.opsForSet().add(setKey, String.valueOf(id));  // Automatically handles duplicates
 
-                if (isUnique != null && isUnique) {
-                    // Set expiration for the key so it auto-expires after a certain time
-                    redisTemplate.expire(key, 1, TimeUnit.MINUTES);
+                // Set expiration for the set if needed (optional)
+                redisTemplate.expire(setKey, 1, TimeUnit.MINUTES);
 
-                    // Asynchronously send request if the endpoint is provided
-                    if (endpoint != null) {
-                        sendPostRequest(endpoint, getUniqueCount());
-                    }
+                // Asynchronously send request if the endpoint is provided
+                if (endpoint != null) {
+                    sendPostRequest(endpoint, getUniqueCount());
                 }
 
                 return ResponseEntity.ok("ok");
@@ -62,14 +86,25 @@ public class VerveController {
         }, executor); // Use the executor for asynchronous request handling
     }
 
-    // Log unique requests every minute using a scheduled task
+    /**
+     * Logs the number of unique requests every minute.
+     * Uses a scheduled task to retrieve the unique count from Redis and sends it to Kafka.
+     */
     @Scheduled(fixedRate = 60000)
     private void logUniqueRequests() {
-        long uniqueCount = redisTemplate.keys("unique:id:*").size();
-        logger.info("Unique requests in the last minute: {}", uniqueCount);
+        try {
+            kafkaProducerService.sendUniqueIdCount(String.valueOf(getUniqueCount()));
+        } catch (Exception e) {
+            logger.error("Failed to send unique request count to Kafka", e);
+        }
     }
 
-    // Send an HTTP POST request using WebClient for non-blocking I/O
+    /**
+     * Sends an HTTP POST request using WebClient with non-blocking I/O.
+     *
+     * @param endpoint the URL to which the POST request should be sent
+     * @param count the unique count to include in the request payload
+     */
     private void sendPostRequest(String endpoint, long count) {
         Map<String, Object> postData = new HashMap<>();
         postData.put("unique_count", count);
@@ -84,14 +119,18 @@ public class VerveController {
                 .subscribe(); // Non-blocking subscription
     }
 
-    @PostMapping("/api/verve/verify")
-    public ResponseEntity<String> verifyEndpoint(@RequestParam int uniqueCount, @RequestBody Map<String, Object> requestData) {
-        logger.info("Received verification request with data: {}", requestData);
-        return ResponseEntity.ok("Verification successful");
-    }
-
-    // Helper method to get the count of unique IDs in Redis
+    /**
+     * Retrieves the unique request count from Redis and deletes the set after retrieval.
+     *
+     * @return the unique count of IDs stored in Redis
+     */
     private long getUniqueCount() {
-        return redisTemplate.keys("unique:id:*").size();
+        String setKey = "unique:ids";
+        long uniqueCount = redisTemplate.opsForSet().size(setKey);
+
+        // Resetting the count for the next minute
+        redisTemplate.delete(setKey);
+
+        return uniqueCount;
     }
 }
