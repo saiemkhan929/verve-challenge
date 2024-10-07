@@ -34,7 +34,7 @@ spring.kafka.properties.sasl.jaas.config=org.apache.kafka.common.security.plain.
 - **Port**: `6379`
 
 ### Kafka Configuration
-
+- Please create a topic called `topic_0` (The topic name can't be changed). 
 - Replace `<KAFKA_BROKER_IP>`, `<KAFKA_USERNAME>`, and `<KAFKA_PASSWORD>` with the appropriate values for your Kafka setup.
 
 ## Running the Application
@@ -46,7 +46,12 @@ java -jar target/challenge-0.0.1-SNAPSHOT.jar
 ```
 Make sure to adjust(override) the configuration file, by passing the configuration as command-line arguments:
 ```bash
-java -jar target/challenge-0.0.1-SNAPSHOT.jar --server.port=8080 --spring.data.redis.host=localhost --spring.data.redis.port=6379 --spring.kafka.bootstrap-servers=<KAFKA_BROKER_IP>:9092 --spring.kafka.properties.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='<KAFKA_USERNAME>' password='<KAFKA_PASSWORD>';
+java -jar challenge-0.0.1-SNAPSHOT.jar --server.port=8080 --spring.data.redis.host=localhost --spring.data.redis.port=6379 --spring.kafka.bootstrap-servers=<KAFKA_BROKER_IP>:9092 --spring.kafka.properties.sasl.jaas.config="org.apache.kafka.common.security.plain.PlainLoginModule required username='<KAFKA_USERNAME>' password='<KAFKA_PASSWORD>';"
+```
+
+Example
+```bash
+java -jar challenge-0.0.1-SNAPSHOT.jar --server.port=8081 --spring.data.redis.host=localhost --spring.data.redis.port=6379 --spring.kafka.bootstrap-servers="example-1.aws.confluent.cloud:9092" --spring.kafka.properties.sasl.jaas.config="org.apache.kafka.common.security.plain.PlainLoginModule required username='api_key_is_here' password='secret_key_is_here';"
 ```
 ## Accessing the API
 Once the application is running, you can access the API at:
