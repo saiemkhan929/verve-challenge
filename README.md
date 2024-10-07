@@ -42,7 +42,7 @@ spring.kafka.properties.sasl.jaas.config=org.apache.kafka.common.security.plain.
 To run the application, use the following command:
 
 ```bash
-java -jar target/challenge-0.0.1-SNAPSHOT.jar
+java -jar challenge-0.0.1-SNAPSHOT.jar
 ```
 Make sure to adjust(override) the configuration file, by passing the configuration as command-line arguments:
 ```bash
